@@ -127,6 +127,55 @@ fn should_clear_terminated_sidecar(running_mode: &RunningMode, current_pid: Opti
 }
 
 #[cfg(target_os = "windows")]
+fn windows_proxy_belongs_to_app(
+    global_enabled: bool,
+    global_server: &str,
+    pac: &sysproxy::Autoproxy,
+    expected_server: &str,
+    expected_pac_url: &str,
+) -> bool {
+    (global_enabled || pac.enable)
+        && (!global_enabled || global_server == expected_server)
+        && (!pac.enable || pac.url == expected_pac_url)
+}
+
+#[cfg(target_os = "windows")]
+async fn clear_terminated_sidecar_proxy() -> Result<()> {
+    use crate::{config::MixedPort, core::sysopt::Sysopt, utils::server};
+    use winreg::{RegKey, enums};
+
+    Sysopt::global().wait_idle().await;
+    let verge = Config::verge().await.data_arc();
+    let host = verge.proxy_host.as_deref().unwrap_or("127.0.0.1");
+    let expected_server = format!("{host}:{}", MixedPort::desired().await);
+    let expected_pac_url = format!("http://{host}:{}/commands/pac", server::embedded_server_port()?);
+    let settings = RegKey::predef(enums::HKEY_CURRENT_USER).open_subkey_with_flags(
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+        enums::KEY_QUERY_VALUE,
+    )?;
+    let global_enabled = settings.get_value::<u32, _>("ProxyEnable")? == 1;
+    // The merged sysproxy view hides per-protocol settings belonging to another application.
+    let global_server = if global_enabled {
+        settings.get_value::<std::string::String, _>("ProxyServer")?
+    } else {
+        std::string::String::new()
+    };
+    drop(settings);
+    let pac = sysproxy::Autoproxy::get_auto_proxy()?;
+    if windows_proxy_belongs_to_app(
+        global_enabled,
+        &global_server,
+        &pac,
+        &expected_server,
+        &expected_pac_url,
+    ) {
+        proxy_control::clear().await?;
+        handle::Handle::refresh_verge();
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 use {
     std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
     windows_sys::Win32::{
@@ -384,6 +433,7 @@ impl CoreManager {
     }
 
     async fn clear_terminated_sidecar(&self, terminated_pid: u32) {
+        let _config_write = Config::lock_config_write().await;
         let _life = self.lifecycle_lock.lock().await;
         if !should_clear_terminated_sidecar(&self.get_running_mode(), self.get_running_sidecar_pid(), terminated_pid) {
             return;
@@ -393,6 +443,14 @@ impl CoreManager {
         #[cfg(target_os = "windows")]
         self.set_job_handle(None);
         proxy_control::stop_guard().await;
+        #[cfg(target_os = "windows")]
+        if let Err(error) = clear_terminated_sidecar_proxy().await {
+            logging!(
+                warn,
+                Type::Core,
+                "failed to clear the terminated sidecar's system proxy: {error:#}"
+            );
+        }
         self.core_stopped();
     }
 }
@@ -547,6 +605,42 @@ mod readiness_tests {
         assert!(!should_clear_terminated_sidecar(&RunningMode::Sidecar, Some(43), 42));
         assert!(!should_clear_terminated_sidecar(&RunningMode::Service, Some(42), 42));
         assert!(!should_clear_terminated_sidecar(&RunningMode::NotRunning, None, 42));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn terminated_sidecar_cleanup_preserves_foreign_proxy_settings() {
+        let server = "127.0.0.1:7897";
+        let url = "http://127.0.0.1:3333/commands/pac";
+        let off = sysproxy::Autoproxy::default();
+        let ours = sysproxy::Autoproxy {
+            enable: true,
+            url: url.into(),
+        };
+        let foreign = sysproxy::Autoproxy {
+            enable: true,
+            url: "http://other.example/proxy.pac".into(),
+        };
+        assert!(super::windows_proxy_belongs_to_app(true, server, &off, server, url));
+        assert!(super::windows_proxy_belongs_to_app(false, "", &ours, server, url));
+        assert!(!super::windows_proxy_belongs_to_app(
+            true, server, &foreign, server, url
+        ));
+        assert!(!super::windows_proxy_belongs_to_app(
+            true,
+            "127.0.0.1:10809",
+            &ours,
+            server,
+            url
+        ));
+        assert!(!super::windows_proxy_belongs_to_app(
+            true,
+            "http=127.0.0.1:7897;https=other.example:8080",
+            &off,
+            server,
+            url,
+        ));
+        assert!(!super::windows_proxy_belongs_to_app(false, "", &off, server, url));
     }
 
     #[test]

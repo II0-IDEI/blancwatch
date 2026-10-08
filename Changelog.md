@@ -1,3 +1,14 @@
+## Blancwatch personal v1 (based on v2.5.7)
+
+- Add local BlancVPN subscription import with hourly refresh and provider links.
+- Fix ordinary VLESS WebSocket imports.
+
+**🖥️ Windows**
+
+- Add a separate Blancwatch application with manual updates.
+- Preserve TUN Off and show observed status when the core stops.
+- Restore ordinary networking when Blancwatch's proxy core unexpectedly stops.
+
 ## v2.5.7
 
 <details>

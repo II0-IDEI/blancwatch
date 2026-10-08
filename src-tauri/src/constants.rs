@@ -49,8 +49,8 @@ pub mod timing {
 }
 
 pub mod profile {
-    /// Floor, in minutes, for how often a profile may auto-update (24 hours).
-    pub const MIN_UPDATE_INTERVAL: u64 = 1440;
+    /// Floor, in minutes, for how often a profile may auto-update (1 hour).
+    pub const MIN_UPDATE_INTERVAL: u64 = 60;
 }
 
 pub mod files {
@@ -63,7 +63,7 @@ pub mod files {
 pub mod tun {
     pub const DEFAULT_STACK: &str = "gvisor";
 
-    pub const DNS_HIJACK: &[&str] = &["any:53"];
+    pub const DNS_HIJACK: &[&str] = &["any:53", "tcp://any:53"];
 
     /// Saved dialog fields; `enable` belongs to the verge switch.
     pub const GUI_KEYS: &[&str] = &[

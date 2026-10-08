@@ -43,6 +43,9 @@ pub struct CoreUpgradeReport {
 }
 
 pub async fn upgrade_core(force: bool) -> Result<CoreUpgradeReport> {
+    if cfg!(target_os = "windows") {
+        bail!("Blancwatch personal v1 pins Mihomo v1.19.32. Update the core using a Blancwatch installer.");
+    }
     let _serialized = UPGRADE_LOCK.lock().await;
     let core = Config::verge().await.latest_arc().get_valid_clash_core();
     tracing::Span::current().record("core", tracing::field::display(&core));

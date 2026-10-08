@@ -195,6 +195,7 @@ export const translationKeys = [
   'profiles.components.card.labels.clickToImport',
   'profiles.components.fileInput.chooseFile',
   'profiles.components.menu.home',
+  'profiles.components.menu.support',
   'profiles.components.menu.select',
   'profiles.components.menu.shareQrCode',
   'profiles.components.menu.editInfo',

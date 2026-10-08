@@ -127,6 +127,14 @@ impl IProfiles {
                         item.home = None;
                         home_changed = true;
                     }
+                    if item
+                        .support
+                        .as_deref()
+                        .is_some_and(|support| normalize_profile_home_url(support).is_none())
+                    {
+                        item.support = None;
+                        home_changed = true;
+                    }
                 }
 
                 if home_changed && let Err(err) = profiles.save_file().await {
@@ -276,6 +284,9 @@ impl IProfiles {
 
     /// Updates fields returned by a remote profile refresh.
     async fn update_item(&mut self, uid: &str, item: &mut PrfItem) -> Result<()> {
+        if let Some(file_data) = item.file_data.as_mut() {
+            *file_data = super::subscription::adapt_remote_profile(file_data)?.into();
+        }
         if self.items.is_none() {
             self.items = Some(vec![]);
         }
@@ -288,7 +299,14 @@ impl IProfiles {
                     each.extra = item.extra;
                     each.updated = item.updated;
                     each.home = item.home.to_owned();
-                    each.option = PrfOption::merge(each.option.as_ref(), item.option.as_ref());
+                    each.support = item.support.to_owned();
+                    let mut option = item.option.clone();
+                    if let Some(option) = option.as_mut() {
+                        // Refresh retries select a temporary network route, not a new user preference.
+                        option.self_proxy = None;
+                        option.with_proxy = None;
+                    }
+                    each.option = PrfOption::merge(each.option.as_ref(), option.as_ref());
                     if let Some(file_data) = item.file_data.take() {
                         let file = each.file.take();
                         let file =
@@ -1061,6 +1079,37 @@ fn activate_selected_nodes_with(repair: SelectionRepair) -> tokio::sync::oneshot
 mod tests {
     use super::*;
     use tauri_plugin_mihomo::models::Proxy;
+
+    #[tokio::test]
+    async fn invalid_refresh_preserves_previous_profile_and_metadata() -> Result<()> {
+        let original = PrfItem {
+            uid: Some("remote".into()),
+            name: Some("User name".into()),
+            file: Some("last-good.yaml".into()),
+            home: Some("https://home.example.test/".into()),
+            support: Some("https://support.example.test/".into()),
+            updated: Some(123),
+            file_data: Some("proxies: []\n".into()),
+            ..PrfItem::default()
+        };
+        let mut profiles = IProfiles {
+            current: Some("remote".into()),
+            items: Some(vec![original]),
+        };
+        let before = serde_yaml_ng::to_string(&profiles)?;
+        for body in ["vless://malformed", "proxies: [", "dmxlc3M6Ly9tYWxmb3JtZWQ="] {
+            let mut refresh = PrfItem {
+                home: Some("https://new.example.test/".into()),
+                updated: Some(456),
+                file_data: Some(body.into()),
+                ..PrfItem::default()
+            };
+            assert!(profiles.update_item("remote", &mut refresh).await.is_err());
+            assert_eq!(serde_yaml_ng::to_string(&profiles)?, before);
+            assert_eq!(profiles.get_item("remote")?.file_data.as_deref(), Some("proxies: []\n"));
+        }
+        Ok(())
+    }
 
     fn deletion_item(uid: &str, kind: &str, file: &str, merge: Option<&str>) -> PrfItem {
         PrfItem {

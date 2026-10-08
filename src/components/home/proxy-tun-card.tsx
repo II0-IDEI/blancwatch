@@ -20,7 +20,7 @@ import { useTranslation } from 'react-i18next'
 import ProxyControlSwitches from '@/components/shared/proxy-control-switches'
 import { useSystemProxyState } from '@/hooks/use-system-proxy-state'
 import { useSystemState } from '@/hooks/use-system-state'
-import { useVerge } from '@/hooks/use-verge'
+import { useClashConfigData } from '@/providers/app-data-context'
 import { showNotice } from '@/services/notice-service'
 
 const LOCAL_STORAGE_TAB_KEY = 'clash-verge-proxy-active-tab'
@@ -141,12 +141,13 @@ export const ProxyTunCard: FC = () => {
     () => localStorage.getItem(LOCAL_STORAGE_TAB_KEY) || 'system',
   )
 
-  const { verge } = useVerge()
-  const { isTunModeAvailable } = useSystemState()
+  const { clashConfig } = useClashConfigData()
+  const { isTunModeAvailable, runningMode } = useSystemState()
   // Display the observed OS state, not the requested configuration.
   const { indicator: systemProxyIndicator } = useSystemProxyState()
 
-  const { enable_tun_mode } = verge ?? {}
+  const tunEnabled =
+    runningMode !== 'NotRunning' && clashConfig?.tun.enable === true
 
   const handleError = (err: unknown) => {
     showNotice.error(err)
@@ -169,13 +170,13 @@ export const ProxyTunCard: FC = () => {
       return {
         text: !isTunModeAvailable
           ? t('home.components.proxyTun.status.tunModeServiceRequired')
-          : enable_tun_mode
+          : tunEnabled
             ? t('home.components.proxyTun.status.tunModeEnabled')
             : t('home.components.proxyTun.status.tunModeDisabled'),
         tooltip: t('home.components.proxyTun.tooltips.tunMode'),
       }
     }
-  }, [activeTab, systemProxyIndicator, enable_tun_mode, isTunModeAvailable, t])
+  }, [activeTab, systemProxyIndicator, tunEnabled, isTunModeAvailable, t])
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
@@ -201,7 +202,7 @@ export const ProxyTunCard: FC = () => {
           onClick={() => handleTabChange('tun')}
           icon={TroubleshootRounded}
           label={t('settings.sections.system.toggles.tunMode')}
-          hasIndicator={enable_tun_mode && isTunModeAvailable}
+          hasIndicator={tunEnabled}
         />
       </Stack>
 

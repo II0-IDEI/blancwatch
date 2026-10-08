@@ -50,6 +50,9 @@ impl RunStateEnv for RealEnv {
             );
             let status = clash_verge_service_ipc::inspect_installation(&[clash_verge_service_ipc::CoreRequirement {
                 name: name.clone(),
+                #[cfg(windows)]
+                sha256: Some(crate::core::service::PINNED_WINDOWS_CORE_SHA256.to_owned()),
+                #[cfg(not(windows))]
                 sha256: None,
             }])
             .await?;
