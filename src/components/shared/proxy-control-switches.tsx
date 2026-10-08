@@ -17,6 +17,7 @@ import { useServiceUninstaller } from '@/hooks/use-service-uninstaller'
 import { useSystemProxyState } from '@/hooks/use-system-proxy-state'
 import { useSystemState } from '@/hooks/use-system-state'
 import { useVerge } from '@/hooks/use-verge'
+import { useClashConfigData } from '@/providers/app-data-context'
 import { showNotice } from '@/services/notice-service'
 import { requestService } from '@/services/service-request'
 
@@ -29,6 +30,7 @@ interface ProxySwitchProps {
 interface SwitchRowProps {
   label: string
   active: boolean
+  requestedActive?: boolean
   disabled?: boolean
   infoTitle: string
   onInfoClick?: () => void
@@ -46,6 +48,7 @@ interface SwitchRowProps {
 const SwitchRow = ({
   label,
   active,
+  requestedActive = active,
   disabled,
   infoTitle,
   onInfoClick,
@@ -55,13 +58,13 @@ const SwitchRow = ({
   highlight,
 }: SwitchRowProps) => {
   const theme = useTheme()
-  const [checked, setChecked] = useState(active)
+  const [checked, setChecked] = useState(requestedActive)
   const pendingRef = useRef(false)
 
   if (pendingRef.current) {
-    if (active === checked) pendingRef.current = false
-  } else if (checked !== active) {
-    setChecked(active)
+    if (requestedActive === checked) pendingRef.current = false
+  } else if (checked !== requestedActive) {
+    setChecked(requestedActive)
   }
 
   const handleChange = (_: React.ChangeEvent, value: boolean) => {
@@ -69,10 +72,10 @@ const SwitchRow = ({
     setChecked(value)
     onToggle(value)
       .then((applied) => {
-        if (applied === false) setChecked(active)
+        if (applied === false) setChecked(requestedActive)
       })
       .catch((err: any) => {
-        setChecked(active)
+        setChecked(requestedActive)
         onError?.(err)
       })
       .finally(() => {
@@ -138,6 +141,7 @@ const ProxyControlSwitches = ({
   const { indicator: systemProxyIndicator, toggleSystemProxy } =
     useSystemProxyState()
   const { runState, isTunModeAvailable, isLoading } = useSystemState()
+  const { clashConfig } = useClashConfigData()
   // Offer to uninstall only a service that is actually there and working.
   const isServiceInstallReady = runState.serviceUsable
 
@@ -145,6 +149,8 @@ const ProxyControlSwitches = ({
   const tunRef = useRef<DialogRef>(null)
 
   const { enable_tun_mode } = verge ?? {}
+  const tunEnabled =
+    runState.mode !== 'NotRunning' && clashConfig?.tun.enable === true
 
   // Enabling needs a running core; disabling only writes OS state and must stay available.
   const handleSystemProxyToggle = async (value: boolean) => {
@@ -196,12 +202,13 @@ const ProxyControlSwitches = ({
       {isTunMode && (
         <SwitchRow
           label={t('settings.sections.proxyControl.fields.tunMode')}
-          active={(enable_tun_mode && isTunModeAvailable) || false}
+          active={tunEnabled}
+          requestedActive={enable_tun_mode ?? false}
           infoTitle={t('settings.sections.proxyControl.tooltips.tunMode')}
           onInfoClick={() => tunRef.current?.open()}
           onToggle={handleTunToggle}
           onError={onError}
-          highlight={(enable_tun_mode && isTunModeAvailable) || false}
+          highlight={tunEnabled}
           extraIcons={
             <>
               {!isTunModeAvailable && (

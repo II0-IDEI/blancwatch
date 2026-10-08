@@ -34,7 +34,7 @@ export interface ProfileViewerRef {
 type ProfileViewerProps = Props & { ref?: Ref<ProfileViewerRef> }
 
 // 同后端 constants::profile::MIN_UPDATE_INTERVAL
-const MIN_UPDATE_INTERVAL = 1440
+const MIN_UPDATE_INTERVAL = 60
 
 export function ProfileViewer({ onChange, ref }: ProfileViewerProps) {
   const { t } = useTranslation()

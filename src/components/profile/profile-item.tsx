@@ -326,6 +326,12 @@ const ProfileItemBase = (props: ProfileItemProps) => {
     void openExternalUrl(itemData.home).catch(showNotice.error)
   }
 
+  const onOpenSupport = () => {
+    setAnchorEl(null)
+    if (!itemData.support) return
+    void openExternalUrl(itemData.support).catch(showNotice.error)
+  }
+
   const onEditInfo = () => {
     setAnchorEl(null)
     onEdit()
@@ -420,6 +426,7 @@ const ProfileItemBase = (props: ProfileItemProps) => {
 
   const menuLabels: Record<string, TranslationKey> = {
     home: 'profiles.components.menu.home',
+    support: 'profiles.components.menu.support',
     select: 'profiles.components.menu.select',
     shareQrCode: 'profiles.components.menu.shareQrCode',
     editInfo: 'profiles.components.menu.editInfo',
@@ -441,6 +448,15 @@ const ProfileItemBase = (props: ProfileItemProps) => {
           {
             label: menuLabels.home,
             handler: onOpenHome,
+            disabled: false,
+          } satisfies ContextMenuItem,
+        ]
+      : []),
+    ...(itemData.support
+      ? [
+          {
+            label: menuLabels.support,
+            handler: onOpenSupport,
             disabled: false,
           } satisfies ContextMenuItem,
         ]

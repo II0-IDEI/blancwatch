@@ -255,6 +255,60 @@ fn macos_service_install_marker_exists() -> std::io::Result<bool> {
 }
 
 #[cfg(windows)]
+pub(crate) const PINNED_WINDOWS_CORE_SHA256: &str = "3c107d54ef1b895e4980b53f517d52f3c1137101fa2637347c9ce343fc50d7b2";
+
+#[cfg(windows)]
+fn windows_service_claim_matches(claim: Option<&Path>, executable: &Path) -> Result<bool> {
+    let Some(claim) = claim else {
+        return Ok(false);
+    };
+    let root = executable
+        .parent()
+        .context("Blancwatch executable has no install directory")?;
+    Ok(std::fs::canonicalize(claim)?
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&std::fs::canonicalize(root)?.to_string_lossy()))
+}
+
+#[cfg(windows)]
+pub(crate) fn require_windows_service_claim() -> Result<()> {
+    use winreg::{RegKey, enums};
+
+    let claim = match RegKey::predef(enums::HKEY_LOCAL_MACHINE).open_subkey_with_flags(
+        "Software\\II0-IDEI\\Blancwatch",
+        enums::KEY_QUERY_VALUE | enums::KEY_WOW64_64KEY,
+    ) {
+        Ok(key) => match key.get_value::<String, _>("ServiceInstallRoot") {
+            Ok(root) => Some(PathBuf::from(root)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error).context("failed to read Blancwatch service ownership"),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("failed to inspect Blancwatch service ownership"),
+    };
+    if !windows_service_claim_matches(claim.as_deref(), &current_exe()?)? {
+        bail!(
+            "This installation does not own the shared Clash service. Stop and uninstall any other Clash service, then reinstall Blancwatch before using service mode. Sidecar remains available."
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn pinned_windows_service_core_requirement(core: &str) -> Result<clash_verge_service_ipc::CoreRequirement> {
+    require_windows_service_claim()?;
+    let name = format!("{core}.exe");
+    let bundled = current_exe()?.with_file_name(&name);
+    if clash_verge_service_ipc::management::sha256_file(&bundled)? != PINNED_WINDOWS_CORE_SHA256 {
+        bail!("Blancwatch service mode requires its pinned bundled Mihomo core");
+    }
+    Ok(clash_verge_service_ipc::CoreRequirement {
+        name,
+        sha256: Some(PINNED_WINDOWS_CORE_SHA256.to_owned()),
+    })
+}
+
+#[cfg(windows)]
 fn open_registered_service() -> Result<Option<windows_service::service::Service>> {
     use windows_service::{
         Error as WindowsServiceError,
@@ -278,7 +332,11 @@ fn open_registered_service() -> Result<Option<windows_service::service::Service>
 
 #[cfg(windows)]
 pub(crate) fn trusted_service_evidence() -> Result<bool> {
-    Ok(open_registered_service()?.is_some())
+    let registered = open_registered_service()?.is_some();
+    if registered {
+        require_windows_service_claim()?;
+    }
+    Ok(registered)
 }
 
 /// Whether IPC cannot succeed until the service is started again. A service that is starting, or
@@ -291,6 +349,7 @@ pub(crate) fn service_stopped() -> Result<bool> {
     let Some(service) = open_registered_service()? else {
         return Ok(true);
     };
+    require_windows_service_claim()?;
     let status = service
         .query_status()
         .context("failed to query Windows service status")?;
@@ -565,6 +624,7 @@ fn packaged_service_tool_path(file_name: &str, packaged_path: impl FnOnce() -> R
 
 #[cfg(target_os = "windows")]
 fn uninstall_service() -> Result<()> {
+    require_windows_service_claim()?;
     logging!(info, Type::Service, "uninstall service");
 
     use deelevate::{PrivilegeLevel, Token};
@@ -708,6 +768,15 @@ fn install_service() -> Result<()> {
 }
 
 fn invoke_service_install(cores: &[clash_verge_service_ipc::management::CoreSource], core_only: bool) -> Result<()> {
+    #[cfg(windows)]
+    {
+        require_windows_service_claim()?;
+        for core in cores {
+            if clash_verge_service_ipc::management::sha256_file(&core.path)? != PINNED_WINDOWS_CORE_SHA256 {
+                bail!("Blancwatch service installation requires the pinned Mihomo core");
+            }
+        }
+    }
     let name = format!("clash-verge-service-install{}", std::env::consts::EXE_SUFFIX);
     let installer = packaged_service_tool_path(&name, || {
         #[cfg(target_os = "linux")]
@@ -866,6 +935,22 @@ pub(super) fn record_residual_service(error: &anyhow::Error) {
 #[tracing::instrument(skip_all, level = "info", fields(generation = tracing::field::Empty, staging = tracing::field::Empty, code = tracing::field::Empty, outcome = tracing::field::Empty))]
 pub(super) async fn start_with_existing_service(config_file: &Path) -> Result<()> {
     clear_active_service_session();
+
+    #[cfg(windows)]
+    {
+        let core = Config::verge().await.latest_arc().get_valid_clash_core();
+        let requirement = tokio::task::spawn_blocking(move || pinned_windows_service_core_requirement(&core))
+            .await
+            .context("Blancwatch service core verification did not finish")??;
+        let status = clash_verge_service_ipc::inspect_installation(std::slice::from_ref(&requirement)).await?;
+        if !status.cores.iter().any(|core| {
+            core.name == requirement.name && core.availability == clash_verge_service_ipc::CoreAvailability::Ready
+        }) {
+            bail!(
+                "The shared Clash service core differs from Blancwatch's pinned Mihomo. Stop any other Clash installation and reinstall the Blancwatch service before using service mode."
+            );
+        }
+    }
 
     let credentials = current_owner_credentials()?;
     let runtime = collect_service_runtime_bundle(config_file).await?;
@@ -1995,6 +2080,8 @@ pub static SERVICE_MANAGER: ServiceManager = ServiceManager;
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, reason = "tests assert by panicking")]
 mod tests {
+    #[cfg(windows)]
+    use super::windows_service_claim_matches;
     use super::{
         ServiceHealth, ServiceStatus, capture_generation_before, claim_owner_recovery_generation,
         generate_service_session_token, mark_service_unavailable_after_owner_loss, owner_recovery_policy,
@@ -2027,6 +2114,21 @@ mod tests {
     }
 
     static TEST_DIRECTORY_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_service_claim_accepts_only_the_installed_root() -> anyhow::Result<()> {
+        let fixture = TestDirectory::new("windows-service-claim")?;
+        let owned = fixture.path().join("Blancwatch");
+        let foreign = fixture.path().join("Clash Verge");
+        std::fs::create_dir(&owned)?;
+        std::fs::create_dir(&foreign)?;
+        let executable = owned.join("Blancwatch.exe");
+        assert!(!windows_service_claim_matches(None, &executable)?);
+        assert!(windows_service_claim_matches(Some(&owned), &executable)?);
+        assert!(!windows_service_claim_matches(Some(&foreign), &executable)?);
+        Ok(())
+    }
 
     struct TestDirectory(PathBuf);
 

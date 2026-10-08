@@ -1,6 +1,6 @@
 use crate::{
     config::{Config, IVerge},
-    core::{CoreManager, autostart, handle, hotkey, logger, proxy_control, tray},
+    core::{CoreManager, autostart, handle, hotkey, logger, manager::RunningMode, proxy_control, tray},
     module::{auto_backup::AutoBackupManager, lightweight},
 };
 use anyhow::Result;
@@ -300,12 +300,37 @@ pub(super) async fn apply_verge_patch_locked(
     patch: &IVerge,
     not_save_file: bool,
 ) -> Result<()> {
+    let tun_off_without_core = if patch.enable_tun_mode == Some(false) {
+        let manager = CoreManager::global();
+        let _lifecycle = manager.lifecycle_lock.lock().await;
+        if matches!(*manager.get_running_mode(), RunningMode::NotRunning) {
+            // Off must survive another side effect failing in this patch.
+            Config::disable_tun_and_persist().await?;
+            let mut tun = Mapping::new();
+            tun.insert("enable".into(), false.into());
+            let mut runtime_patch = Mapping::new();
+            runtime_patch.insert("tun".into(), tun.into());
+            let runtime = Config::runtime().await;
+            runtime.edit_draft(|draft| draft.patch_config(&runtime_patch));
+            runtime.apply();
+            Config::generate_file().await?;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
     let verge = Config::verge().await;
     // Hold the claim across side effects so concurrent transactions cannot share this draft.
     let transaction = DraftTransaction::begin(vec![&verge])?;
     verge.edit_draft(|d| d.patch_config(patch));
 
-    let update_flags = determine_update_flags(patch);
+    let mut update_flags = determine_update_flags(patch);
+    if tun_off_without_core {
+        update_flags.remove(UpdateFlags::CLASH_CONFIG);
+    }
     logging!(debug, Type::Setup, "Determined update flags: {:?}", update_flags);
     // A failed patch rolls back to what the user already had; it never invents a value for them.
     process_terminated_flags(update_flags, patch).await?;

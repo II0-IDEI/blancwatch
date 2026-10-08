@@ -173,6 +173,18 @@ async fn init_silent_updater() {
 
     let app_handle = Handle::app_handle();
 
+    if app_handle
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|config| config.get("endpoints"))
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(Vec::is_empty)
+    {
+        return;
+    }
+
     // Install cached updates before starting background checks.
     if SilentUpdater::global().try_install_on_startup(app_handle).await {
         logging!(info, Type::Setup, "Update installed at startup, restarting...");

@@ -284,6 +284,7 @@ export interface TranslationResources {
           openFile: string
           select: string
           shareQrCode: string
+          support: string
           update: string
           updateViaProxy: string
         }

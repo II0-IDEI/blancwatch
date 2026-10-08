@@ -198,7 +198,11 @@ pub async fn update_profile(uid: &String, option: Option<&PrfOption>, is_mannual
 
     if should_refresh {
         logging!(debug, Type::Config, "[订阅更新] 更新内核配置");
-        match CoreManager::global().update_config_with_force(is_mannual_trigger).await {
+        let result = {
+            let _config_write = Config::lock_config_write().await;
+            CoreManager::global().update_config_with_force(is_mannual_trigger).await
+        };
+        match result {
             Ok(outcome) if outcome.is_valid() => {
                 logging_error!(Type::Config, Config::sync_dns_override().await);
                 handle::Handle::refresh_clash();

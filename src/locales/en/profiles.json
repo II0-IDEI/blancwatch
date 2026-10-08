@@ -71,6 +71,7 @@
     },
     "menu": {
       "home": "Home",
+      "support": "Support",
       "select": "Select",
       "shareQrCode": "Share QR Code",
       "editInfo": "Edit Info",

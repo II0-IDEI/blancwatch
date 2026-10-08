@@ -556,13 +556,13 @@ pub fn init_scheme() -> Result<()> {
     let app_exe = app_exe.to_string_lossy().into_owned();
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let (clash, _) = hkcu.create_subkey("Software\\Classes\\Clash")?;
-    clash.set_value("", &"Clash Verge")?;
-    clash.set_value("URL Protocol", &"Clash Verge URL Scheme Protocol")?;
-    let (default_icon, _) = hkcu.create_subkey("Software\\Classes\\Clash\\DefaultIcon")?;
+    let (clash, _) = hkcu.create_subkey("Software\\Classes\\Blancwatch")?;
+    clash.set_value("", &"Blancwatch")?;
+    clash.set_value("URL Protocol", &"Blancwatch URL Scheme Protocol")?;
+    let (default_icon, _) = hkcu.create_subkey("Software\\Classes\\Blancwatch\\DefaultIcon")?;
     default_icon.set_value("", &app_exe)?;
-    let (command, _) = hkcu.create_subkey("Software\\Classes\\Clash\\Shell\\Open\\Command")?;
-    command.set_value("", &format!("{app_exe} \"%1\""))?;
+    let (command, _) = hkcu.create_subkey("Software\\Classes\\Blancwatch\\Shell\\Open\\Command")?;
+    command.set_value("", &format!("\"{app_exe}\" \"%1\""))?;
 
     Ok(())
 }

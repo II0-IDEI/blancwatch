@@ -8,7 +8,6 @@ use crate::{
 };
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_yaml_ng::Mapping;
 use smartstring::alias::String;
 use std::time::Duration;
 use tokio::fs;
@@ -58,6 +57,9 @@ pub struct PrfItem {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub home: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support: Option<String>,
 
     #[serde(skip)]
     pub file_data: Option<String>,
@@ -229,6 +231,7 @@ impl PrfItem {
                 ..PrfOption::default()
             }),
             home: None,
+            support: None,
             updated: Some(chrono::Local::now().timestamp() as usize),
             file_data: Some(file_data.unwrap_or_else(|| tmpl::ITEM_LOCAL.into())),
         })
@@ -244,7 +247,9 @@ impl PrfItem {
         let self_proxy = option.is_some_and(|o| o.self_proxy.unwrap_or(false));
         let accept_invalid_certs = option.is_some_and(|o| o.danger_accept_invalid_certs.unwrap_or(false));
         let allow_auto_update = Some(allow_auto_update_enabled(option));
-        let user_agent = option.and_then(|o| o.user_agent.clone());
+        let user_agent = option
+            .and_then(|o| o.user_agent.clone())
+            .or_else(|| Some(format!("Blancwatch/{}", env!("CARGO_PKG_VERSION")).into()));
         let update_interval = option.and_then(|o| o.update_interval);
         let timeout = option.and_then(|o| o.timeout_seconds).unwrap_or(20);
         let mut merge = option.and_then(|o| o.merge.clone());
@@ -336,7 +341,7 @@ impl PrfItem {
             Some(val) => Some(val),
             None => match header.get("profile-update-interval") {
                 Some(value) => match value.to_str().unwrap_or("").parse::<u64>() {
-                    Ok(val) => Some(val * 60), // hour -> min
+                    Ok(val) => val.checked_mul(60), // hour -> min
                     Err(_) => None,
                 },
                 None => None,
@@ -347,21 +352,21 @@ impl PrfItem {
             .get("profile-web-page-url")
             .and_then(|value| value.to_str().ok())
             .and_then(normalize_profile_home_url);
+        let support = header
+            .get("support-url")
+            .and_then(|value| value.to_str().ok())
+            .and_then(normalize_profile_home_url);
+        let title = header
+            .get("profile-title")
+            .and_then(|value| value.to_str().ok())
+            .and_then(super::subscription::profile_title);
 
         let uid = help::get_uid("R").into();
         let file = format!("{uid}.yaml").into();
         let name = name
             .map(|s| s.to_owned())
-            .unwrap_or_else(|| filename.map(|s| s.into()).unwrap_or_else(|| "Remote File".into()));
-        let data = resp.text();
-
-        let data = data.trim_start_matches('\u{feff}');
-
-        let yaml = serde_yaml_ng::from_str::<Mapping>(data).context("the remote profile data is invalid yaml")?;
-
-        if !yaml.contains_key("proxies") && !yaml.contains_key("proxy-providers") {
-            bail!("profile does not contain `proxies` or `proxy-providers`");
-        }
+            .unwrap_or_else(|| title.or(filename).unwrap_or_else(|| "Remote File".into()).into());
+        let data = super::subscription::adapt_remote_profile(resp.text())?;
 
         if merge.is_none() {
             let merge_item = &mut Self::from_merge(None);
@@ -406,9 +411,10 @@ impl PrfItem {
                 proxies,
                 groups,
                 allow_auto_update,
-                ..PrfOption::default()
+                ..option.cloned().unwrap_or_default()
             }),
             home,
+            support,
             updated: Some(chrono::Local::now().timestamp() as usize),
             file_data: Some(data.into()),
         })
@@ -557,4 +563,68 @@ fn fix_dirty_url(input: &str) -> Result<Url> {
     }
 
     Ok(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    #[tokio::test]
+    async fn remote_headers_and_explicit_options_are_preserved() -> Result<()> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            for user_agent in [
+                format!("Blancwatch/{}", env!("CARGO_PKG_VERSION")),
+                "Example test".into(),
+            ] {
+                let (mut socket, _) = listener.accept().await?;
+                let mut request = [0u8; 2048];
+                let read = socket.read(&mut request).await?;
+                assert!(std::str::from_utf8(&request[..read])?.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(key, value)| {
+                        key.eq_ignore_ascii_case("user-agent") && value.trim() == user_agent
+                    })
+                }));
+                let body = "proxies: []\n";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\nprofile-title: base64:RXhhbXBsZSBQcm9maWxl\r\nprofile-update-interval: 1\r\nprofile-web-page-url: https://home.example.test/\r\nsupport-url: https://support.example.test/\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        });
+        let mut option = PrfOption {
+            self_proxy: Some(false),
+            with_proxy: Some(false),
+            timeout_seconds: Some(3),
+            danger_accept_invalid_certs: Some(false),
+            allow_auto_update: Some(false),
+            merge: Some("merge".into()),
+            script: Some("script".into()),
+            rules: Some("rules".into()),
+            proxies: Some("proxies".into()),
+            groups: Some("groups".into()),
+            ..PrfOption::default()
+        };
+        let url = format!("http://{address}/profile");
+        let item = PrfItem::from_url(&url, None, None, Some(&option)).await?;
+        assert_eq!(item.name.as_deref(), Some("Example Profile"));
+        assert_eq!(item.home.as_deref(), Some("https://home.example.test/"));
+        assert_eq!(item.support.as_deref(), Some("https://support.example.test/"));
+        assert_eq!(item.file_data.as_deref(), Some("proxies: []\n"));
+        option.update_interval = Some(60);
+        assert_eq!(item.option, Some(option.clone()));
+
+        let name = String::from("User name");
+        option.user_agent = Some("Example test".into());
+        option.update_interval = Some(120);
+        let item = PrfItem::from_url(&url, Some(&name), None, Some(&option)).await?;
+        assert_eq!(item.name.as_deref(), Some("User name"));
+        assert_eq!(item.option, Some(option));
+        server.await??;
+        Ok(())
+    }
 }

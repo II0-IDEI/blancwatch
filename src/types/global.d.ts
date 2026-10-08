@@ -237,6 +237,7 @@ interface IProfileItem {
   }
   option?: IProfileOption
   home?: string
+  support?: string
 }
 
 interface IProfileOption {
